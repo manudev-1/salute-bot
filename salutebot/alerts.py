@@ -30,6 +30,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from html import escape
 from typing import Any, Protocol, cast
+import json
+import urllib.error
+import urllib.request
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -169,7 +172,138 @@ class SesMailer:
             raise MailerError(
                 f"SES send failed: {type(exc).__name__}") from exc
 
+class TelegramError(RuntimeError):
+    """Raised when a Telegram request cannot be completed or configured."""
 
+
+class TelegramSender:
+    """Tiny Telegram sender compatible with legacy `run()` expectations.
+
+    It supports both the object form (`TelegramSender(...).run(...)`) and the
+    module-level `run(...)` shim used by old scripts such as `wather.py`.
+    """
+
+    def __init__(
+        self,
+        token: str | None = None,
+        chat_id: str | None = None,
+        *,
+        base_url: str | None = None,
+        timeout: float = 30.0,
+    ) -> None:
+        self.token = token or os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TG_BOT_TOKEN")
+        self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID") or os.getenv("TG_CHAT_ID")
+        self.base_url = (base_url or os.getenv("TELEGRAM_API_URL") or "https://api.telegram.org").rstrip("/")
+        self.timeout = timeout
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.token and self.chat_id)
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "TelegramSender":
+        source = os.environ if env is None else env
+        return cls(
+            token=source.get("TELEGRAM_BOT_TOKEN") or source.get("TG_BOT_TOKEN"),
+            chat_id=source.get("TELEGRAM_CHAT_ID") or source.get("TG_CHAT_ID"),
+            base_url=source.get("TELEGRAM_API_URL"),
+        )
+
+    def _request(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self.token:
+            raise TelegramError("Telegram bot token is missing. Set TELEGRAM_BOT_TOKEN or pass token=...")
+        if not self.chat_id:
+            raise TelegramError("Telegram chat id is missing. Set TELEGRAM_CHAT_ID or pass chat_id=...")
+
+        url = f"{self.base_url}/bot{self.token}/{method}"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                body = response.read().decode("utf-8")
+        except urllib.error.URLError as exc:
+            raise TelegramError(f"Telegram request failed for {method}: {exc}") from exc
+
+        result = json.loads(body or "{}")
+        if not result.get("ok", False):
+            description = result.get("description", "Telegram API rejected the request")
+            raise TelegramError(description)
+        return result
+
+    def send(self, to_addr: str, content: EmailContent | str, **kwargs: Any) -> None:
+        """Mailer-compatible send API. `to_addr` is treated as the Telegram chat id.
+
+        When `content` is an `EmailContent`, only its `text` body is sent so it still
+        behaves like a generic alert sink for the daemon/fan-out code.
+        """
+        payload: dict[str, Any] = {
+            "chat_id": kwargs.pop("chat_id", None) or to_addr or self.chat_id,
+            "text": content.text if isinstance(content, EmailContent) else str(content),
+        }
+        payload.update(kwargs)
+        self._request("sendMessage", payload)
+
+    def run(
+        self,
+        text: str | None = None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Compatibility wrapper for older scripts calling `sender.run(...)`."""
+        bot_token = kwargs.pop("bot_token", None) or kwargs.pop("token", None)
+        if bot_token:
+            self.token = str(bot_token)
+
+        payload_chat_id = kwargs.pop("chat_id", None) or kwargs.pop("chat", None)
+        if payload_chat_id:
+            self.chat_id = str(payload_chat_id)
+
+        if text is None and args:
+            if len(args) == 1:
+                text = str(args[0])
+            elif len(args) >= 2:
+                if not self.token:
+                    self.token = str(args[0])
+                if not self.chat_id:
+                    self.chat_id = str(args[1])
+                if len(args) >= 3:
+                    text = str(args[2])
+
+        if text is None:
+            text = kwargs.pop("message", None)
+        if text is None:
+            text = kwargs.pop("text", None)
+        if text is None:
+            text = ""
+
+        if not text and not self.configured:
+            return {"ok": True, "skipped": True, "reason": "No Telegram config or message supplied."}
+        if not text:
+            raise TelegramError("No text was provided to send to Telegram.")
+
+        resolved_chat_id = kwargs.pop("chat_id", None) or self.chat_id
+        resolved_token = kwargs.pop("token", None) or kwargs.pop("bot_token", None) or self.token
+        if resolved_token and resolved_token != self.token:
+            self.token = str(resolved_token)
+        if resolved_chat_id and resolved_chat_id != self.chat_id:
+            self.chat_id = str(resolved_chat_id)
+
+        return self._request("sendMessage", {"chat_id": resolved_chat_id, "text": str(text)})
+
+    def __call__(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        return self.run(*args, **kwargs)
+
+
+def run(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Module-level compatibility entry point for old `wather.py` style code."""
+    token = kwargs.pop("bot_token", None) or kwargs.pop("token", None)
+    chat_id = kwargs.pop("chat_id", None) or kwargs.pop("chat", None)
+    sender = TelegramSender(token=token, chat_id=chat_id)
+    return sender.run(*args, **kwargs)
 
 def fan_out(store: Store,
             mailer: Mailer,

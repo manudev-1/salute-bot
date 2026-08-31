@@ -1,19 +1,30 @@
-# salute-bot runtime + dev dependencies. Pinned loosely (compatible-release) to
-# survive Homebrew Python patch bumps without silently rotting the venv.
-# Rebuild:  python3.14 -m venv .venv && .venv/bin/pip install -r requirements.txt
-
-# --- scraping ---
-playwright~=1.48        # headless Chromium drive of the JSF flow (drive half)
-beautifulsoup4~=4.12    # parse the JSF partial-response CDATA (parse half)
-
-# --- secrets at rest (D3/D29) ---
-cryptography~=44.0      # AEAD (cf_enc/nre) + HMAC blind index (cf_hash)
-
-# --- alerts (D10/D15) ---
-boto3~=1.35             # AWS SES email
-
-# --- dev ---
-pytest~=8.3
-ruff~=0.15
-mypy~=2.1               # static type check (config in pyproject [tool.mypy])
-pyright~=1.1            # static type check (Pylance engine; config in [tool.pyright])
+ast_serialize==0.8.0
+beautifulsoup4==4.15.0
+boto3==1.43.83
+botocore==1.43.83
+cffi==2.1.1
+cryptography==44.0.3
+greenlet==3.5.5
+iniconfig==2.3.0
+jmespath==1.1.0
+librt==0.15.0
+mypy==2.3.1
+mypy_extensions==1.1.0
+nodeenv==1.10.0
+packaging==26.3
+pathspec==1.1.1
+playwright==1.62.0
+pluggy==1.6.0
+pycparser==3.0
+pyee==13.0.1
+Pygments==2.21.0
+pyright==1.1.411
+pytest==8.4.2
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.3
+ruff==0.16.5
+s3transfer==0.19.2
+six==1.17.0
+soupsieve==2.9.2
+typing_extensions==4.16.0
+urllib3==2.7.0
