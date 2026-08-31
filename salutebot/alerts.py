@@ -211,27 +211,63 @@ class TelegramSender:
 
     def _request(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.token:
-            raise TelegramError("Telegram bot token is missing. Set TELEGRAM_BOT_TOKEN or pass token=...")
-        if not self.chat_id:
-            raise TelegramError("Telegram chat id is missing. Set TELEGRAM_CHAT_ID or pass chat_id=...")
+            raise TelegramError(
+                "Telegram bot token is missing. "
+                "Set TELEGRAM_BOT_TOKEN or pass token=..."
+            )
+
+        if not payload.get("chat_id"):
+            raise TelegramError(
+                "Telegram chat id is missing. "
+                "Set TELEGRAM_CHAT_ID or pass chat_id=..."
+            )
 
         url = f"{self.base_url}/bot{self.token}/{method}"
+
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
             method="POST",
         )
+
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as response:
                 body = response.read().decode("utf-8")
-        except urllib.error.URLError as exc:
-            raise TelegramError(f"Telegram request failed for {method}: {exc}") from exc
 
-        result = json.loads(body or "{}")
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+
+            raise TelegramError(
+                f"Telegram API returned HTTP {exc.code} for {method}: "
+                f"{error_body}"
+            ) from exc
+
+        except urllib.error.URLError as exc:
+            raise TelegramError(
+                f"Telegram request failed for {method}: {exc}"
+            ) from exc
+
+        try:
+            result = json.loads(body or "{}")
+        except json.JSONDecodeError as exc:
+            raise TelegramError(
+                f"Telegram returned invalid JSON: {body!r}"
+            ) from exc
+
         if not result.get("ok", False):
-            description = result.get("description", "Telegram API rejected the request")
-            raise TelegramError(description)
+            description = result.get(
+                "description",
+                "Telegram API rejected the request",
+            )
+
+            raise TelegramError(
+                f"Telegram API error for {method}: {description}"
+            )
+
         return result
 
     def send(self, to_addr: str, content: EmailContent | str, **kwargs: Any) -> None:
@@ -241,7 +277,7 @@ class TelegramSender:
         behaves like a generic alert sink for the daemon/fan-out code.
         """
         payload: dict[str, Any] = {
-            "chat_id": kwargs.pop("chat_id", None) or to_addr or self.chat_id,
+            "chat_id": kwargs.pop("chat_id", None) or self.chat_id,
             "text": content.text if isinstance(content, EmailContent) else str(content),
         }
         payload.update(kwargs)
