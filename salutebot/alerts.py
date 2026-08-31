@@ -270,7 +270,7 @@ class TelegramSender:
 
         return result
 
-    def send(self, to_addr: str, content: EmailContent | str, **kwargs: Any) -> None:
+    def send(self, content: EmailContent | str, **kwargs: Any) -> None:
         """Mailer-compatible send API. `to_addr` is treated as the Telegram chat id.
 
         When `content` is an `EmailContent`, only its `text` body is sent so it still
