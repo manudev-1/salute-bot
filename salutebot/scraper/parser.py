@@ -14,11 +14,14 @@ id: the JSF row ids (`…:j_idt699:0:` … `:16:`) are positional and renumber o
 every render, so keying on them would be fragile.
 """
 
+import logging
 import re
 
 from bs4 import BeautifulSoup
 
 from salutebot.models import Slot
+
+logger = logging.getLogger(__name__)
 
 _MONTHS = {
     "gennaio": 1,
@@ -55,6 +58,7 @@ def parse_available_slots(markup: str) -> list[Slot]:
         slot = _parse_card(card)
         if slot is not None:
             slots.append(slot)
+    logger.debug("Parsed %d available slots", len(slots))
     return slots
 
 

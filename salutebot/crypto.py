@@ -19,10 +19,13 @@ nothing logs a plaintext secret.
 
 import hashlib
 import hmac
+import logging
 
 from cryptography.fernet import Fernet
 
 from salutebot.config import EnvConfig
+
+logger = logging.getLogger(__name__)
 
 
 class Crypto:
@@ -38,9 +41,11 @@ class Crypto:
         # at construction (raises ValueError) rather than at first encrypt.
         self.__fernet = Fernet(enc_key.encode("utf-8"))
         self.__hmac_key = hmac_key.encode("utf-8")
+        logger.debug("Crypto primitives initialized")
 
     @classmethod
-    def from_env(cls, config: EnvConfig) -> "Crypto":
+    def from_env(cls, config: EnvConfig) -> Crypto:
+        logger.debug("Creating crypto primitives from environment configuration")
         return cls(config.enc_key, config.hmac_key)
 
     def hash_cf(self, cf: str) -> str:

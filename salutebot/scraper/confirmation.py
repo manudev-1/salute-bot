@@ -18,11 +18,14 @@ returns one `Prestazione`; a multi-prestazione ricetta would be a model change,
 not just a parser change.
 """
 
+import logging
 import re
 
 from bs4 import BeautifulSoup
 
 from salutebot.models import Prestazione
+
+logger = logging.getLogger(__name__)
 
 _LABEL_CODE = "prestazione da erogare"
 _LABEL_DESC = "descrizione regionale"
@@ -38,19 +41,23 @@ def parse_prestazione_confirmation(markup: str) -> Prestazione | None:
     soup = BeautifulSoup(markup, "html.parser")
     row = soup.select_one(".prestazioneRow")
     if row is None:
+        logger.warning("Prestazione confirmation row not found")
         return None
 
     fields = _label_value_map(row)
     code = fields.get(_LABEL_CODE, "")
     descrizione = fields.get(_LABEL_DESC, "")
     if not code and not descrizione:
+        logger.warning("Prestazione confirmation row had no identifying fields")
         return None
 
-    return Prestazione(
+    result = Prestazione(
         code=code,
         descrizione=descrizione,
         quantita=_parse_quantita(fields.get(_LABEL_QTY)),
     )
+    logger.debug("Parsed prestazione confirmation for code %s", result.code)
+    return result
 
 
 def _label_value_map(row) -> dict[str, str]:

@@ -2,7 +2,9 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from salutebot.alerts import TelegramSender
@@ -12,7 +14,6 @@ from salutebot.daemon import run
 from salutebot.scraper.drive import LiveScraper
 from salutebot.store import Store
 
-
 LOG_DIR = Path("logs")
 LOG_FILE = LOG_DIR / "watcher.log"
 
@@ -21,6 +22,8 @@ def setup_logging():
     LOG_DIR.mkdir(exist_ok=True)
 
     logger = logging.getLogger()
+    if logger.handlers:
+        return
     logger.setLevel(logging.INFO)
 
     formatter = logging.Formatter(
@@ -41,6 +44,7 @@ def setup_logging():
 
     logger.addHandler(console)
     logger.addHandler(file_handler)
+    logger.info("Logging configured")
 
 
 logger = logging.getLogger("salutebot.watcher")

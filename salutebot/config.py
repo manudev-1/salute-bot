@@ -10,8 +10,11 @@ keys differ); the exact key format/length is a Phase 2 concern, pinned once
 the crypto library call (AEAD primitive, HMAC construction) is chosen.
 """
 
+import logging
 import os
 from collections.abc import Mapping
+
+logger = logging.getLogger(__name__)
 
 
 class MissingEnvKeyError(RuntimeError):
@@ -43,6 +46,7 @@ class EnvConfig:
         self.__enc_key = self.__require(source, self.__ENC_KEY_VAR)
         self.__hmac_key = self.__require(source, self.__HMAC_KEY_VAR)
         if self.__enc_key == self.__hmac_key:
+            logger.error("Encryption and HMAC keys must be distinct")
             raise DuplicateEnvKeyError(
                 f"{self.__ENC_KEY_VAR} and {self.__HMAC_KEY_VAR} must be distinct "
                 "secrets (D29 addendum) -- reusing one key across AEAD and HMAC "
@@ -53,6 +57,7 @@ class EnvConfig:
     def __require(source: Mapping[str, str], var_name: str) -> str:
         value = source.get(var_name)
         if not value:
+            logger.error("Required environment key %s is missing", var_name)
             raise MissingEnvKeyError(
                 f"{var_name} is not set. Secrets are encrypted at rest with a key "
                 "from the environment only (never committed, never in the DB) -- "

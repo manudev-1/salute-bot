@@ -5,7 +5,10 @@ never in chat, code, or logs) -- error messages name the *rule* violated, not
 the input.
 """
 
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 # --- Codice Fiscale ---------------------------------------------------------
 # Structural check only (character classes + length), NOT the check-digit
@@ -39,6 +42,7 @@ def validate_cf(cf: str) -> str:
     """
     normalized = cf.strip().upper()
     if not _CF_RE.match(normalized):
+        logger.warning("CF validation failed")
         raise ValueError("Formato CF non valido (atteso un Codice Fiscale italiano di 16 caratteri).")
     return normalized
 
@@ -62,6 +66,7 @@ def validate_nre(nre: str) -> str:
     """
     normalized = "".join(nre.split()).upper()
     if not _NRE_RE.match(normalized):
+        logger.warning("NRE validation failed")
         raise ValueError(
             "Formato NRE non valido (atteso il codice ricetta completo di 15 caratteri "
             "— un prefisso di 5 caratteri seguito da 10 cifre)."

@@ -13,6 +13,7 @@ The loop itself is self-clocking (D21/D22), serves check-now requests first
 """
 
 import fcntl
+import logging
 import os
 import time
 from contextlib import contextmanager
@@ -26,15 +27,16 @@ from salutebot.alerts import (
     render_watch_failing_notice,
 )
 from salutebot.detector import detect_new_slots
-from salutebot.scraper.base import NREInvalidError, Scraper, ScrapeError, ScrapeResult
+from salutebot.scraper.base import NREInvalidError, ScrapeError, Scraper, ScrapeResult
 from salutebot.store import Store
 
 _DEFAULT_LOCK_PATH = "/tmp/salute-bot.lock"
 _DEFAULT_HEARTBEAT_PATH = "/tmp/salute-bot.heartbeat"
 _HEARTBEAT_PATH_VAR = "SALUTEBOT_HEARTBEAT"
+logger = logging.getLogger(__name__)
 
 
-def resolve_heartbeat_path(env: "os._Environ | dict[str, str] | None" = None) -> str:
+def resolve_heartbeat_path(env: os._Environ | dict[str, str] | None = None) -> str:
     """The heartbeat file location, `SALUTEBOT_HEARTBEAT`-overridable (D11).
 
     Shared by the daemon (which writes it) and the CLI (which reads it to tell
@@ -97,6 +99,7 @@ def single_instance_lock(lock_path: str = _DEFAULT_LOCK_PATH):
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as err:
         os.close(fd)
+        logger.error("Another daemon already holds lock %s", lock_path)
         raise DaemonAlreadyRunningError(
             f"another salute-bot daemon already holds {lock_path} — refusing to "
             "start a second scraper (D27)."
@@ -105,6 +108,7 @@ def single_instance_lock(lock_path: str = _DEFAULT_LOCK_PATH):
         yield
     finally:
         os.close(fd)  # releases the flock (kernel would too, on any exit)
+        logger.debug("Released daemon lock %s", lock_path)
 
 
 # ----- the self-clocking serial loop (D21/D22/D27) -----
@@ -136,6 +140,7 @@ def process_prestazione(
     while True:
         credential = store.representative_credential(code)
         if credential is None:
+            logger.debug("Prestazione %s is dormant", code)
             return "dormant"  # no active NRE left (or ever) — skip until one is added
         if not marked:
             # Atomically claim the 2-min floor (D22) window: winning both advances
@@ -143,12 +148,14 @@ def process_prestazione(
             # the same window (N>1-safe coalescing, D39). A lost claim = someone
             # already scraped it recently, so the stored slots stand.
             if not store.claim_prestazione(code, now, FLOOR_SECONDS):
+                logger.debug("Prestazione %s skipped: floor not elapsed", code)
                 return "skipped_floor"
             marked = True
         cf, nre = credential
         try:
             result = _scrape_with_retry(scraper, cf, nre, sleep)
         except NREInvalidError:
+            logger.warning("Representative credential invalid for prestazione %s; rotating", code)
             # Permanent: this ricetta is dead. Deactivate it, tell its owner, and
             # rotate to the next active subscriber (D28). The loop terminates because
             # each pass deactivates one target, so the active set strictly shrinks.
@@ -156,10 +163,12 @@ def process_prestazione(
             _notify_nre_invalid(store, mailer, cf, code)
             continue
         except ScrapeError:
+            logger.warning("Transient scrape failure for prestazione %s", code)
             return "transient_error"  # retries exhausted this cycle (D11)
         detection = detect_new_slots(store, code, result.slots, now)
         if detection.has_new:
             fan_out(store, mailer, detection, now, sleep=sleep)  # per-recipient retry (D38)
+        logger.info("Processed prestazione %s successfully (%d slots)", code, len(result.slots))
         return "ok"
 
 
@@ -175,7 +184,9 @@ def _scrape_with_retry(scraper: Scraper, cf: str, nre: str, sleep) -> ScrapeResu
             return scraper.scrape(cf, nre)
         except ScrapeError:
             if attempt == RETRY_ATTEMPTS - 1:
+                logger.error("Scrape failed after %d attempts", RETRY_ATTEMPTS)
                 raise
+            logger.warning("Transient scrape failure; retrying attempt %d", attempt + 2)
             sleep(delay)
             delay *= 2
     raise AssertionError("unreachable: RETRY_ATTEMPTS must be >= 1")
@@ -193,7 +204,7 @@ def _notify_nre_invalid(store: Store, mailer: Mailer, cf: str, code: str) -> Non
     try:
         mailer.send(email, notice)
     except MailerError:
-        pass
+        logger.warning("Could not send invalid-credential notice")
 
 
 def run_sweep(
@@ -218,6 +229,7 @@ def run_sweep(
             status = process_prestazione(store, scraper, mailer, code, now, sleep=sleep)
             _record_cycle_outcome(store, mailer, counts, code, status)
             heartbeat()  # per-prestazione liveness — a long sweep can't look dead (D11)
+    logger.debug("Sweep completed")
 
 
 def _record_cycle_outcome(
@@ -242,7 +254,7 @@ def _notify_watch_failing(store: Store, mailer: Mailer, code: str) -> None:
         try:
             mailer.send(email, notice)
         except MailerError:
-            pass
+            logger.warning("Could not send watch-failing notice")
 
 
 # ----- check-now lane (D24/D26/D39) -----
@@ -266,6 +278,7 @@ def serve_checknow(
         if cf_hash in in_flight:
             continue
         in_flight.add(cf_hash)
+        logger.info("Serving check-now request for %d prestazioni", len(codes))
         try:
             for code in codes:
                 status = process_prestazione(store, scraper, mailer, code, now, sleep=sleep)
@@ -296,6 +309,7 @@ def serve_registrations(
         if cf_hash in in_flight:
             continue
         in_flight.add(cf_hash)
+        logger.info("Serving pending registration")
         try:
             _resolve_registration(store, scraper, cf_hash, cf, nre, now, sleep)
         finally:
@@ -310,9 +324,11 @@ def _resolve_registration(
     try:
         result = _scrape_with_retry(scraper, cf, nre, sleep)
     except NREInvalidError:
+        logger.warning("Pending registration rejected: invalid credential")
         store.resolve_registration(cf_hash, now, "invalid")  # dead ricetta — CLI tells the user
         return
     except ScrapeError:
+        logger.warning("Pending registration failed transiently")
         store.resolve_registration(cf_hash, now, "error")    # transient — CLI says try again
         return
     prest = result.prestazione
@@ -325,6 +341,7 @@ def _resolve_registration(
         fresh = [s for s in result.slots if s.slot_key not in known]
         if fresh:
             store.record_new_slots(prest.code, fresh, now)
+            logger.info("Baselined %d slots for new prestazione %s", len(fresh), prest.code)
     store.resolve_registration(cf_hash, now, "ok", prest.code, prest.descrizione)
 
 
@@ -338,6 +355,7 @@ def write_heartbeat(path: str, now: float) -> None:
     with open(tmp, "w", encoding="utf-8") as handle:
         handle.write(str(now))
     os.replace(tmp, path)
+    logger.debug("Heartbeat written")
 
 
 def heartbeat_is_stale(path: str, now: float, max_age: float = HEARTBEAT_MAX_AGE) -> bool:
@@ -347,8 +365,12 @@ def heartbeat_is_stale(path: str, now: float, max_age: float = HEARTBEAT_MAX_AGE
         with open(path, encoding="utf-8") as handle:
             last = float(handle.read().strip())
     except (OSError, ValueError):
+        logger.warning("Heartbeat missing or unreadable")
         return True
-    return (now - last) > max_age
+    stale = (now - last) > max_age
+    if stale:
+        logger.warning("Heartbeat is stale")
+    return stale
 
 
 def notify_watcher_down(store: Store, mailer: Mailer) -> None:
@@ -360,7 +382,7 @@ def notify_watcher_down(store: Store, mailer: Mailer) -> None:
         try:
             mailer.send(email, notice)
         except MailerError:
-            pass
+            logger.warning("Could not send dead-man notice")
 
 
 def seconds_until_next_due(store: Store, now: float) -> float | None:
