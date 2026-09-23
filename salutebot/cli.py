@@ -21,10 +21,13 @@ driftless to test without a TTY.
 """
 
 import argparse
+import logging
 import math
 import os
 import time
+
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from salutebot.config import EnvConfig
@@ -43,6 +46,7 @@ COOLDOWN_SECONDS = 300.0
 # How often the blocking CLI re-checks whether the daemon has served its request
 # (D24 strictly-blocking). Small; injected in tests.
 _CHECKNOW_POLL = 1.0
+logger = logging.getLogger(__name__)
 
 
 def main(argv: list[str] | None = None, *, store: Store | None = None,
@@ -51,6 +55,7 @@ def main(argv: list[str] | None = None, *, store: Store | None = None,
     """Entry point. Builds a real `Store` from env unless one is injected (tests).
     `clock`/`sleep` back `--check-now`'s cooldown + block-poll and are injectable."""
     args = _build_parser().parse_args(argv)
+    logger.info("CLI command started")
     resolved_heartbeat_path = (
         resolve_heartbeat_path() if heartbeat_path is None else heartbeat_path
     )
@@ -161,17 +166,21 @@ def _cmd_check_now(store: Store, cf: str, write, *, clock, sleep, heartbeat_path
     forever (there is no one to serve the request), mirroring registration (D40)."""
     remaining = store.checknow_cooldown_remaining(cf, clock(), COOLDOWN_SECONDS)
     if remaining > 0:
+        logger.info("Check-now request rejected by cooldown")
         write(f"Controllo immediato in pausa — riprova tra {math.ceil(remaining)}s.")
         return
     if _daemon_unavailable(heartbeat_path, clock()):  # down before firing → don't consume the cooldown
+        logger.warning("Check-now request rejected because daemon is unavailable")
         _write_daemon_unavailable(write)
         return
     request_ts = clock()
     store.accept_checknow(cf, request_ts)
+    logger.info("Check-now request accepted")
     write("Controllo immediato in coda — potrebbe richiedere qualche istante...")
     while not store.checknow_served_since(cf, request_ts):
         sleep(_CHECKNOW_POLL)
         if _daemon_unavailable(heartbeat_path, clock()):  # died mid-wait → stop waiting
+            logger.warning("Daemon became unavailable while waiting for check-now")
             _write_daemon_unavailable(write)
             return
     _cmd_list(store, cf, write)
@@ -195,11 +204,13 @@ def _cmd_disable(store: Store, cf: str, read, write) -> None:
         return
     picked = targets[int(choice) - 1]
     store.deactivate_target(cf, picked["code"])
+    logger.info("Notifications disabled for prestazione %s", picked["code"])
     write(f"Notifiche disattivate per {picked['code']}.")
 
 
 def _cmd_disable_all(store: Store, cf: str, write) -> None:
     n = store.deactivate_all_targets(cf)
+    logger.info("Disabled %d notifications", n)
     write(f"Notifiche disattivate per {n} prestazione/i.")
 
 
@@ -214,6 +225,7 @@ def _cmd_delete_user(store: Store, cf: str, read, write) -> None:
         write("Il CF non corrisponde — nulla è stato cancellato.")
         return
     store.delete_user(cf)
+    logger.info("User data deleted")
     write("I tuoi dati sono stati cancellati definitivamente.")
 
 
@@ -289,6 +301,7 @@ def _run_ack(
         return
     request_ts = clock()
     store.submit_registration(cf, email, nre, request_ts)
+    logger.info("Registration request submitted")
     write("Verifica della ricetta sul sistema di prenotazione — potrebbe richiedere qualche istante...")
     result = store.registration_result(cf, request_ts)
     while result is None:
@@ -300,6 +313,7 @@ def _run_ack(
         result = store.registration_result(cf, request_ts)
 
     if result["status"] != "ok":
+        logger.warning("Registration resolved with status %s", result["status"])
         store.clear_registration(cf)
         if result["status"] == "invalid":
             write("Questa ricetta (NRE) non è valida — scaduta, già utilizzata o non "
@@ -320,6 +334,7 @@ def _run_ack(
     if not store.user_exists(cf):
         store.add_user(cf, email)
     store.add_target(cf, Prestazione(code=code, descrizione=desc, quantita=None), nre)
+    logger.info("Registration confirmed for prestazione %s", code)
     write(f"Fatto — ora segui {desc} ({code}). Le notifiche arrivano a {email}.")
 
 

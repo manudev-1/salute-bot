@@ -20,8 +20,12 @@ the result is a separate concern (the alert fan-out step joins
 `new_slots -> targets -> users`), deliberately not this module's job.
 """
 
+import logging
+
 from salutebot.models import DetectionResult, Slot
 from salutebot.store import Store
+
+logger = logging.getLogger(__name__)
 
 
 def detect_new_slots(
@@ -39,6 +43,7 @@ def detect_new_slots(
     keys -- so the returned list carries each key once, never a doubled row.
     """
     known = store.known_slot_keys(code)
+    logger.debug("Detecting slots for prestazione %s: %d known, %d scraped", code, len(known), len(current_slots))
     seen: set[str] = set()
     current: list[Slot] = []
     new_slots: list[Slot] = []
@@ -53,4 +58,5 @@ def detect_new_slots(
         else:
             new_slots.append(slot)  # NOT persisted here -- fan-out records post-dispatch (D36/D38)
 
+    logger.info("Slot detection completed for prestazione %s: %d current, %d new", code, len(current), len(new_slots))
     return DetectionResult(prestazione=code, all_slots=current, new_slots=new_slots)

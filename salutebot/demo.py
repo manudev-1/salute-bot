@@ -16,6 +16,7 @@ Run: `python -m salutebot.demo`.
 """
 
 import base64
+import logging
 import os
 import secrets
 
@@ -32,6 +33,7 @@ _ALICE = ("RSSMRA85T10A562S", "alice@example.com")
 _BOB = ("VRDLGI90A01F205X", "bob@example.com")
 # A 2-min floor (D22) means each sweep must advance the clock past it; +130 s clears it.
 _SWEEP_STEP = 130.0
+logger = logging.getLogger(__name__)
 
 
 class ConsoleMailer:
@@ -125,6 +127,7 @@ def _scene_list(store: Store, write) -> None:
 
 def run_demo(*, mailer: Mailer | None = None, write=print) -> None:
     """Drive the full skeleton against the fixture scraper (deterministic)."""
+    logger.info("Starting demo")
     write("salute-bot — demo end-to-end (scraper finto, pipeline reale)")
     store = Store(":memory:", _ephemeral_crypto())
     the_mailer = mailer if mailer is not None else ConsoleMailer(write)
@@ -135,6 +138,7 @@ def run_demo(*, mailer: Mailer | None = None, write=print) -> None:
     _scene_rotation(write)
     write("\nFatto. Pipeline reale (detector/store/fan-out) su dati di recon reali, "
           "senza NRE né browser.")
+    logger.info("Demo completed")
 
 
 def main() -> None:

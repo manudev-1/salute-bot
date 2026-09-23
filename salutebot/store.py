@@ -7,6 +7,7 @@ in memory when a scrape needs it (D28/D29). All timestamps are unix-epoch floats
 the caller supplies `now` (default `time.time()`) so tests stay deterministic.
 """
 
+import logging
 import sqlite3
 import time
 from pathlib import Path
@@ -15,6 +16,7 @@ from salutebot.crypto import Crypto
 from salutebot.models import Prestazione, Slot
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+logger = logging.getLogger(__name__)
 
 
 class Store:
@@ -29,11 +31,13 @@ class Store:
         self.__conn.execute("PRAGMA foreign_keys = ON")
         self.__conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
         self.__conn.commit()
+        logger.info("Store opened at %s", db_path)
 
     def close(self) -> None:
         self.__conn.close()
+        logger.debug("Store connection closed")
 
-    def __enter__(self) -> "Store":
+    def __enter__(self) -> Store:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -50,6 +54,7 @@ class Store:
             (cf_hash, self.__crypto.encrypt(cf), email),
         )
         self.__conn.commit()
+        logger.info("User registered")
         return cf_hash
 
     def user_exists(self, cf: str) -> bool:
@@ -68,6 +73,7 @@ class Store:
         rows are left intact — they belong to the prestazione, not the user (D20)."""
         self.__conn.execute("DELETE FROM users WHERE cf_hash = ?", (self.__crypto.hash_cf(cf),))
         self.__conn.commit()
+        logger.info("User deleted")
 
     # ----- prestazioni + targets -----
 
@@ -85,6 +91,7 @@ class Store:
             (self.__crypto.hash_cf(cf), prestazione.code, self.__crypto.encrypt(nre)),
         )
         self.__conn.commit()
+        logger.info("Target saved for prestazione %s", prestazione.code)
 
     def get_user_targets(self, cf: str) -> list[dict]:
         """The prestazioni a user watches: code, descrizione, active (0/1). No NRE."""
@@ -103,6 +110,7 @@ class Store:
             (self.__crypto.hash_cf(cf), code),
         )
         self.__conn.commit()
+        logger.info("Target deactivated for prestazione %s", code)
 
     def deactivate_all_targets(self, cf: str) -> int:
         """Disable every one of a user's targets (`--disable-all`); return the count."""
@@ -110,6 +118,7 @@ class Store:
             "UPDATE targets SET active = 0 WHERE user = ?", (self.__crypto.hash_cf(cf),)
         )
         self.__conn.commit()
+        logger.info("Deactivated %d targets", cur.rowcount)
         return cur.rowcount
 
     def list_user_slots(self, cf: str) -> list[dict]:
@@ -182,6 +191,7 @@ class Store:
             (now, code, now - floor),
         )
         self.__conn.commit()
+        logger.debug("Prestazione %s scrape claim %s", code, cur.rowcount == 1)
         return cur.rowcount == 1
 
     def subscriber_emails(self, code: str) -> list[str]:
@@ -212,6 +222,7 @@ class Store:
         for slot in slots:
             self.__insert_slot(code, slot, ts)
         self.__conn.commit()
+        logger.info("Recorded %d new slots for prestazione %s", len(slots), code)
 
     def __insert_slot(self, code: str, slot: Slot, ts: float) -> None:
         """Insert one slot row — no commit; the caller owns the transaction boundary."""
@@ -234,6 +245,7 @@ class Store:
             (ts, code, slot_key),
         )
         self.__conn.commit()
+        logger.debug("Accepted check-now request")
 
     # ----- check-now (D24/D26/D39) -----
 
@@ -260,6 +272,7 @@ class Store:
             (now, self.__crypto.hash_cf(cf)),
         )
         self.__conn.commit()
+        logger.debug("Marked check-now request served")
 
     def checknow_served_since(self, cf: str, request_ts: float) -> bool:
         """True once the daemon has completed *this* check-now (D26): the block-poll

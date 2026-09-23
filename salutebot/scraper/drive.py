@@ -24,9 +24,9 @@ step races the banner against the confirmation so a dead ricetta fails fast. Par
 reuses the offline-tested `parse_prestazione_confirmation` / `parse_available_slots`.
 """
 
+import logging
 import os
 import re
-import sys
 import time
 from collections.abc import Mapping
 
@@ -36,6 +36,8 @@ from playwright.sync_api import sync_playwright
 from salutebot.scraper.base import NREInvalidError, ScrapeError, ScrapeResult
 from salutebot.scraper.confirmation import parse_prestazione_confirmation
 from salutebot.scraper.parser import parse_available_slots
+
+logger = logging.getLogger(__name__)
 
 _SEED_URL = "https://cup.isan.csi.it/"
 _FORM_URL = "https://cup.isan.csi.it/web/guest/ricetta-dematerializzata"
@@ -58,10 +60,10 @@ _CONFIRM_ROW = ".prestazioneRow"                             # confirmation pars
 # The permanent invalid/expired/consumed-ricetta signal (D28), captured live from a
 # known-dead ricetta: a page-level banner "Impossibile recuperare la ricetta
 # dematerializzata" (NOT the field-level nreError0/cfError spans). Matched by text.
-_INVALID_RICETTA_RE = re.compile(r"impossibile recuperare la ricetta", re.I)
+_INVALID_RICETTA_RE = re.compile(r"impossibile recuperare la ricetta", re.IGNORECASE)
 # "altre disponibilità" is a positional j_idt button (id renumbers per render, HAR
 # source `_t385`), so it is matched by its visible label, not its id (SMOKE-CONFIRM).
-_MORE_AVAIL_RE = re.compile(r"altre disponibilit", re.I)
+_MORE_AVAIL_RE = re.compile(r"altre disponibilit", re.IGNORECASE)
 _SLOT_CARD = "div.disponibiliPanel"                          # one slot card (what the parser reads)
 # Short settle between the two proceed clicks — long enough for the ICEfaces input
 # validation to finish, short enough not to reintroduce the old ~30 s wait.
@@ -98,7 +100,7 @@ class LiveScraper:
         self.__t_last = 0.0   # previous debug line's timestamp (for the per-step delta)
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "LiveScraper":
+    def from_env(cls, env: Mapping[str, str] | None = None) -> LiveScraper:
         """Build from env: `SALUTEBOT_HEADFUL` (truthy → show the browser);
         `SALUTEBOT_SCRAPE_TIMEOUT` (seconds, default 60); `SALUTEBOT_DEBUG` (truthy →
         print flow diagnostics to stderr — button clicks + card counts, never secrets)."""
@@ -118,7 +120,7 @@ class LiveScraper:
         total = now - self.__t0
         delta = now - self.__t_last
         self.__t_last = now
-        print(f"[debug] [{total:6.1f}s  Δ{delta:5.1f}s]  {message}", file=sys.stderr)
+        logger.debug("[%6.1fs  delta %5.1fs] %s", total, delta, message)
 
     def scrape(self, cf: str, nre: str) -> ScrapeResult:
         """Run the full flow once and return the prestazione + current slots.
@@ -127,7 +129,7 @@ class LiveScraper:
         retries rather than crashing on the fragile JSF flow. Secrets are typed into the
         page but never logged; error text carries only the exception type, never a value."""
         try:
-            print(f"[debug] starting live scrape for CF={cf} NRE={nre}", file=sys.stderr)
+            logger.info("Starting live scrape")
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(headless=self.__headless)
                 try:
@@ -137,10 +139,13 @@ class LiveScraper:
                 finally:
                     browser.close()
         except NREInvalidError:
+            logger.warning("Live scrape rejected an invalid credential")
             raise  # permanent (D28) — let it propagate for rotation
         except ScrapeError:
+            logger.warning("Live scrape failed transiently")
             raise  # already the transient type
         except Exception as exc:  # any Playwright/other failure → transient (D11)
+            logger.exception("Live scrape failed unexpectedly")
             raise ScrapeError(f"live drive failed: {type(exc).__name__}") from exc
 
     # ----- flow steps (each grounded in the HAR; SMOKE-CONFIRM where dynamic) -----
@@ -171,6 +176,7 @@ class LiveScraper:
         container_html = page.locator(_sel(_SLOTS_CONTAINER)).inner_html()
         slots = parse_available_slots(container_html)         # may be [] (valid "no slots")
         self.__log(f"slot cards in container: {self.__card_count(page)}; parsed slots: {len(slots)}")
+        logger.info("Live scrape completed: %d slots", len(slots))
         return ScrapeResult(prestazione=prestazione, slots=slots)
 
     def __proceed_to_confirmation(self, page) -> None:

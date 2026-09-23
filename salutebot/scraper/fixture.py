@@ -21,6 +21,7 @@ chosen NRE raise `NREInvalidError`, so the D28 representative-rotation path is
 demonstrable too.
 """
 
+import logging
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -28,6 +29,8 @@ from salutebot.models import Prestazione, Slot
 from salutebot.scraper.base import NREInvalidError, ScrapeResult
 from salutebot.scraper.confirmation import parse_prestazione_confirmation
 from salutebot.scraper.parser import parse_available_slots
+
+logger = logging.getLogger(__name__)
 
 _RECON = Path(__file__).resolve().parent.parent.parent / "recon"
 _CONFIRMATION_FIXTURE = _RECON / "epPrestazioni_redacted.xhtml"
@@ -47,10 +50,11 @@ class FixtureScraper:
             raise ValueError("FixtureScraper needs at least one frame")
         self.__dead = set(dead_nres)
         self.__calls = 0  # advances only on a successful scrape (a dead NRE doesn't consume a frame)
+        logger.debug("Fixture scraper initialized with %d frames", len(self.__frames))
 
     @classmethod
     def from_recon(cls, *, baseline: int = 4, added: int = 1,
-                   dead_nres: Iterable[str] = ()) -> "FixtureScraper":
+                   dead_nres: Iterable[str] = ()) -> FixtureScraper:
         """Build from the real redacted recon captures (log §3 demo fixture).
 
         Parses the captured confirmation + slots pages with the production parsers,
@@ -74,7 +78,9 @@ class FixtureScraper:
         `dead_nres` NRE (D28) — without consuming a frame, so rotation to the next
         subscriber still sees the same sweep's slot set."""
         if nre in self.__dead:
+            logger.info("Fixture scrape rejected an invalid credential")
             raise NREInvalidError("fixture: ricetta marcata come non valida (demo D28)")
         frame = self.__frames[min(self.__calls, len(self.__frames) - 1)]
         self.__calls += 1
+        logger.debug("Fixture scrape returned frame %d with %d slots", self.__calls, len(frame))
         return ScrapeResult(prestazione=self.__prestazione, slots=list(frame))

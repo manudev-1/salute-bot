@@ -24,15 +24,16 @@ Recipient addresses are ordinary contact data, not CF/NRE secrets, so they may
 appear in a message; no CF/NRE ever passes through here.
 """
 
+import json
+import logging
 import os
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from html import escape
 from typing import Any, Protocol, cast
-import json
-import urllib.error
-import urllib.request
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -46,6 +47,7 @@ from salutebot.store import Store
 # mailbox is unreachable — chasing it must not re-alert the others).
 SEND_RETRY_ATTEMPTS = 3
 SEND_RETRY_BACKOFF_BASE = 1.0
+logger = logging.getLogger(__name__)
 
 
 
@@ -121,7 +123,7 @@ class SesMailer:
         self.__client = client
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "SesMailer":
+    def from_env(cls, env: Mapping[str, str] | None = None) -> SesMailer:
         """Build from env: `SALUTEBOT_SENDER_EMAIL` (required, the verified sender);
         optional `SALUTEBOT_AWS_REGION`/`AWS_REGION` and `SALUTEBOT_SES_ENDPOINT`
         (the last points boto3 at LocalStack in CI, D12/D15). Typed as `Mapping`,
@@ -143,6 +145,7 @@ class SesMailer:
         # statically satisfy SesClient though it does at runtime -- cast at this one
         # boto3 boundary rather than weaken the Protocol that keeps `send` type-safe.
         client = cast(SesClient, boto3.client("ses", **kwargs))
+        logger.info("SES mailer initialized")
         return cls(sender, client)
 
     def send(self, to_addr: str, content: EmailContent) -> None:
@@ -171,6 +174,7 @@ class SesMailer:
             # No recipient in the message: keep addresses out of error text/logs.
             raise MailerError(
                 f"SES send failed: {type(exc).__name__}") from exc
+        logger.debug("Email delivered")
 
 class TelegramError(RuntimeError):
     """Raised when a Telegram request cannot be completed or configured."""
@@ -201,7 +205,7 @@ class TelegramSender:
         return bool(self.token and self.chat_id)
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "TelegramSender":
+    def from_env(cls, env: Mapping[str, str] | None = None) -> TelegramSender:
         source = os.environ if env is None else env
         return cls(
             token=source.get("TELEGRAM_BOT_TOKEN") or source.get("TG_BOT_TOKEN"),
@@ -211,12 +215,14 @@ class TelegramSender:
 
     def _request(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.token:
+            logger.error("Telegram token is not configured")
             raise TelegramError(
                 "Telegram bot token is missing. "
                 "Set TELEGRAM_BOT_TOKEN or pass token=..."
             )
 
         if not payload.get("chat_id"):
+            logger.error("Telegram chat id is not configured")
             raise TelegramError(
                 "Telegram chat id is missing. "
                 "Set TELEGRAM_CHAT_ID or pass chat_id=..."
@@ -241,12 +247,14 @@ class TelegramSender:
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
 
+            logger.error("Telegram API returned HTTP %d", exc.code)
             raise TelegramError(
                 f"Telegram API returned HTTP {exc.code} for {method}: "
                 f"{error_body}"
             ) from exc
 
         except urllib.error.URLError as exc:
+            logger.error("Telegram request failed")
             raise TelegramError(
                 f"Telegram request failed for {method}: {exc}"
             ) from exc
@@ -264,6 +272,7 @@ class TelegramSender:
                 "Telegram API rejected the request",
             )
 
+            logger.error("Telegram API rejected %s", method)
             raise TelegramError(
                 f"Telegram API error for {method}: {description}"
             )
@@ -359,6 +368,7 @@ def fan_out(store: Store,
     retry backoff is testable.
     """
     if not result.has_new:
+        logger.debug("No new slots for prestazione %s", result.prestazione)
         return FanOutResult(recipients=0, sent=0, persisted=False)
 
     recipients = store.subscriber_emails(result.prestazione)
@@ -366,6 +376,7 @@ def fan_out(store: Store,
         # A scraped prestazione always has >=1 active target driving it (D28), so
         # this is a can't-happen guard; nothing to send, nothing recorded.
         return FanOutResult(recipients=0, sent=0, persisted=False)
+    logger.info("Sending alert for prestazione %s to %d recipients", result.prestazione, len(recipients))
 
     content = render_alert(result)
     delivered = 0
@@ -375,10 +386,12 @@ def fan_out(store: Store,
             delivered += 1
         else:
             failed.append(addr)
+            logger.warning("Alert delivery failed for one recipient")
 
     persisted = delivered > 0
     if persisted:
         store.record_new_slots(result.prestazione, result.new_slots, now)  # D38
+    logger.info("Alert fan-out completed: %d delivered, %d failed", delivered, len(failed))
     return FanOutResult(recipients=len(recipients), sent=delivered,
                         persisted=persisted, failed=tuple(failed))
 
@@ -396,6 +409,7 @@ def _send_with_retry(mailer: Mailer, addr: str, content: EmailContent, sleep) ->
             return True
         except MailerError:
             if attempt == SEND_RETRY_ATTEMPTS - 1:
+                logger.error("Email delivery failed after %d attempts", SEND_RETRY_ATTEMPTS)
                 return False
             sleep(delay)
             delay *= 2
