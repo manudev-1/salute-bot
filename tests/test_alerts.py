@@ -15,6 +15,8 @@ from salutebot.alerts import (
     MailerConfigError,
     MailerError,
     SesMailer,
+    TelegramError,
+    TelegramSender,
     fan_out,
     render_alert,
 )
@@ -215,3 +217,21 @@ def test_ses_mailer_wraps_client_error():
 def test_ses_mailer_from_env_requires_sender():
     with pytest.raises(MailerConfigError):
         SesMailer.from_env(env={})
+
+
+def test_telegram_sender_uses_configured_chat_id(monkeypatch):
+    sender = TelegramSender(token="token", chat_id="123")
+    calls = []
+
+    def fake_request(method, payload):
+        calls.append((method, payload))
+        return {"ok": True}
+
+    monkeypatch.setattr(sender, "_request", fake_request)
+    sender.send("subscriber@example.com", EmailContent(subject="S", text="T", html=""))
+
+    assert calls == [("sendMessage", {"chat_id": "123", "text": "T"})]
+
+
+def test_telegram_error_is_a_mailer_error():
+    assert issubclass(TelegramError, MailerError)

@@ -123,7 +123,7 @@ class SesMailer:
         self.__client = client
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> SesMailer:
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "SesMailer":
         """Build from env: `SALUTEBOT_SENDER_EMAIL` (required, the verified sender);
         optional `SALUTEBOT_AWS_REGION`/`AWS_REGION` and `SALUTEBOT_SES_ENDPOINT`
         (the last points boto3 at LocalStack in CI, D12/D15). Typed as `Mapping`,
@@ -176,7 +176,7 @@ class SesMailer:
                 f"SES send failed: {type(exc).__name__}") from exc
         logger.debug("Email delivered")
 
-class TelegramError(RuntimeError):
+class TelegramError(MailerError):
     """Raised when a Telegram request cannot be completed or configured."""
 
 
@@ -205,7 +205,7 @@ class TelegramSender:
         return bool(self.token and self.chat_id)
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> TelegramSender:
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "TelegramSender":
         source = os.environ if env is None else env
         return cls(
             token=source.get("TELEGRAM_BOT_TOKEN") or source.get("TG_BOT_TOKEN"),
@@ -280,7 +280,7 @@ class TelegramSender:
         return result
 
     def send(self, to_addr: str, content: EmailContent | str, **kwargs: Any) -> None:
-        """Mailer-compatible send API. `to_addr` is treated as the Telegram chat id.
+        """Mailer-compatible send API. The configured chat receives the alert.
 
         When `content` is an `EmailContent`, only its `text` body is sent so it still
         behaves like a generic alert sink for the daemon/fan-out code.
