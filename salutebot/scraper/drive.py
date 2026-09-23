@@ -100,7 +100,7 @@ class LiveScraper:
         self.__t_last = 0.0   # previous debug line's timestamp (for the per-step delta)
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> LiveScraper:
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "LiveScraper":
         """Build from env: `SALUTEBOT_HEADFUL` (truthy → show the browser);
         `SALUTEBOT_SCRAPE_TIMEOUT` (seconds, default 60); `SALUTEBOT_DEBUG` (truthy →
         print flow diagnostics to stderr — button clicks + card counts, never secrets)."""

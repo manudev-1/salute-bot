@@ -74,7 +74,11 @@ def main():
         logger.info("LiveScraper initialized")
 
         alerter = TelegramSender.from_env()
-        logger.info("Alerter initialized")
+        logger.info("Alerter initialized (Telegram configured=%s)", alerter.configured)
+        if not alerter.configured:
+            raise RuntimeError(
+                "Telegram is not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID"
+            )
 
         logger.info("Starting daemon loop")
 

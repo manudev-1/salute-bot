@@ -37,7 +37,7 @@ class Store:
         self.__conn.close()
         logger.debug("Store connection closed")
 
-    def __enter__(self) -> Store:
+    def __enter__(self) -> "Store":
         return self
 
     def __exit__(self, *exc: object) -> None:

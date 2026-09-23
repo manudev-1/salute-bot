@@ -44,7 +44,7 @@ class Crypto:
         logger.debug("Crypto primitives initialized")
 
     @classmethod
-    def from_env(cls, config: EnvConfig) -> Crypto:
+    def from_env(cls, config: EnvConfig) -> "Crypto":
         logger.debug("Creating crypto primitives from environment configuration")
         return cls(config.enc_key, config.hmac_key)
 
