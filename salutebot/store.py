@@ -28,6 +28,7 @@ class Store:
         # set outside a transaction (hence here, not in schema.sql).
         self.__conn.execute("PRAGMA foreign_keys = ON")
         self.__conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        self.__migrate_notification_columns()
         self.__conn.commit()
 
     def close(self) -> None:
@@ -41,13 +42,19 @@ class Store:
 
     # ----- users -----
 
-    def add_user(self, cf: str, email: str) -> str:
+    def add_user(
+        self, cf: str, email: str = "", *,
+        notification_channel: str = "email",
+        telegram_chat_id: str | None = None,
+    ) -> str:
         """Insert a new user; return its `cf_hash`. Raises on a duplicate CF —
         callers branch on `user_exists` first (D14 registration)."""
         cf_hash = self.__crypto.hash_cf(cf)
         self.__conn.execute(
-            "INSERT INTO users (cf_hash, cf_enc, email) VALUES (?, ?, ?)",
-            (cf_hash, self.__crypto.encrypt(cf), email),
+            "INSERT INTO users "
+            "(cf_hash, cf_enc, email, notification_channel, telegram_chat_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (cf_hash, self.__crypto.encrypt(cf), email, notification_channel, telegram_chat_id),
         )
         self.__conn.commit()
         return cf_hash
@@ -62,6 +69,26 @@ class Store:
     def get_email(self, cf: str) -> str | None:
         row = self.__row("SELECT email FROM users WHERE cf_hash = ?", (self.__crypto.hash_cf(cf),))
         return row["email"] if row else None
+
+    def get_contact(self, cf: str) -> str | None:
+        row = self.__row(
+            "SELECT email, notification_channel, telegram_chat_id FROM users "
+            "WHERE cf_hash = ?", (self.__crypto.hash_cf(cf),)
+        )
+        return self.__contact_value(row) if row else None
+
+    def get_notification_settings(self, cf: str) -> tuple[str, str | None] | None:
+        row = self.__row(
+            "SELECT notification_channel, telegram_chat_id FROM users WHERE cf_hash = ?",
+            (self.__crypto.hash_cf(cf),),
+        )
+        return (row["notification_channel"], row["telegram_chat_id"]) if row else None
+
+    def all_user_contacts(self) -> list[str]:
+        rows = self.__rows(
+            "SELECT email, notification_channel, telegram_chat_id FROM users", ()
+        )
+        return [self.__contact_value(row) for row in rows]
 
     def delete_user(self, cf: str) -> None:
         """Delete the user and (via ON DELETE CASCADE) their targets. Shared `slots`
@@ -193,6 +220,14 @@ class Store:
         )
         return [r["email"] for r in rows]
 
+    def subscriber_contacts(self, code: str) -> list[str]:
+        rows = self.__rows(
+            "SELECT u.email, u.notification_channel, u.telegram_chat_id "
+            "FROM targets t JOIN users u ON u.cf_hash = t.user "
+            "WHERE t.prestazione = ? AND t.active = 1", (code,)
+        )
+        return [self.__contact_value(row) for row in rows]
+
     # ----- slots (per-prestazione de-dup memory, D8/D20) -----
 
     def known_slot_keys(self, code: str) -> set[str]:
@@ -318,7 +353,11 @@ class Store:
 
     # ----- registration staging (D14/D40) -----
 
-    def submit_registration(self, cf: str, email: str, nre: str, now: float) -> None:
+    def submit_registration(
+        self, cf: str, email: str, nre: str, now: float, *,
+        notification_channel: str = "email",
+        telegram_chat_id: str | None = None,
+    ) -> None:
         """Stage an unresolved `(CF, NRE)` registration for the daemon (D40).
 
         Upserts on `cf_hash` (one pending op per user; a re-submit replaces and clears
@@ -326,15 +365,17 @@ class Store:
         prestazione code by scraping — the CLI never scrapes (D27)."""
         self.__conn.execute(
             "INSERT INTO pending_registrations "
-            "(cf_hash, cf_enc, email, nre_enc, requested_at, resolved_at, "
+            "(cf_hash, cf_enc, email, notification_channel, telegram_chat_id, nre_enc, requested_at, resolved_at, "
             " result_status, result_code, result_desc) "
-            "VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL) "
             "ON CONFLICT(cf_hash) DO UPDATE SET cf_enc = excluded.cf_enc, "
             "email = excluded.email, nre_enc = excluded.nre_enc, "
+            "notification_channel = excluded.notification_channel, "
+            "telegram_chat_id = excluded.telegram_chat_id, "
             "requested_at = excluded.requested_at, resolved_at = NULL, "
             "result_status = NULL, result_code = NULL, result_desc = NULL",
             (self.__crypto.hash_cf(cf), self.__crypto.encrypt(cf), email,
-             self.__crypto.encrypt(nre), now),
+             notification_channel, telegram_chat_id, self.__crypto.encrypt(nre), now),
         )
         self.__conn.commit()
 
@@ -423,3 +464,34 @@ class Store:
 
     def __rows(self, sql: str, params: tuple) -> list[sqlite3.Row]:
         return self.__conn.execute(sql, params).fetchall()
+
+    @staticmethod
+    def __contact_value(row: sqlite3.Row) -> str:
+        if row["notification_channel"] == "telegram":
+            return f"telegram:{row['telegram_chat_id'] or ''}"
+        return str(row["email"])
+
+    def __migrate_notification_columns(self) -> None:
+        user_columns = {
+            row["name"] for row in self.__conn.execute("PRAGMA table_info(users)")
+        }
+        if "notification_channel" not in user_columns:
+            self.__conn.execute(
+                "ALTER TABLE users ADD COLUMN notification_channel TEXT NOT NULL DEFAULT 'email'"
+            )
+        if "telegram_chat_id" not in user_columns:
+            self.__conn.execute("ALTER TABLE users ADD COLUMN telegram_chat_id TEXT")
+
+        pending_columns = {
+            row["name"]
+            for row in self.__conn.execute("PRAGMA table_info(pending_registrations)")
+        }
+        if "notification_channel" not in pending_columns:
+            self.__conn.execute(
+                "ALTER TABLE pending_registrations "
+                "ADD COLUMN notification_channel TEXT NOT NULL DEFAULT 'email'"
+            )
+        if "telegram_chat_id" not in pending_columns:
+            self.__conn.execute(
+                "ALTER TABLE pending_registrations ADD COLUMN telegram_chat_id TEXT"
+            )

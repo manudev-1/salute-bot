@@ -24,8 +24,11 @@ Recipient addresses are ordinary contact data, not CF/NRE secrets, so they may
 appear in a message; no CF/NRE ever passes through here.
 """
 
+import json
 import os
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from html import escape
@@ -96,6 +99,45 @@ class Mailer(Protocol):
         """Deliver one email; raise `MailerError` on a transport failure."""
         ...
 
+
+class TelegramError(MailerError):
+    """Raised when Telegram delivery fails."""
+
+
+class TelegramSender:
+    """Mailer-compatible Telegram sender using the configured/default chat ID."""
+
+    def __init__(
+        self, token: str | None = None, chat_id: str | None = None, *,
+        base_url: str | None = None, timeout: float = 30.0,
+    ) -> None:
+        self.__token = token or os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("TG_BOT_TOKEN")
+        self.__chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID") or os.getenv("TG_CHAT_ID")
+        self.__base_url = (
+            base_url or os.getenv("TELEGRAM_API_URL") or "https://api.telegram.org"
+        ).rstrip("/")
+        self.__timeout = timeout
+
+    def send(self, to_addr: str, content: EmailContent | str) -> None:
+        chat_id = to_addr.removeprefix("telegram:") or self.__chat_id
+        if not self.__token:
+            raise TelegramError("TELEGRAM_BOT_TOKEN is not configured.")
+        if not chat_id:
+            raise TelegramError("TELEGRAM_CHAT_ID is not configured.")
+        text = content.text if isinstance(content, EmailContent) else str(content)
+        request = urllib.request.Request(
+            f"{self.__base_url}/bot{self.__token}/sendMessage",
+            data=json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.__timeout) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except urllib.error.URLError as exc:
+            raise TelegramError("Telegram request failed.") from exc
+        if not result.get("ok", False):
+            raise TelegramError(result.get("description", "Telegram rejected the message."))
 
 
 class SesClient(Protocol):
@@ -191,7 +233,7 @@ def fan_out(store: Store,
     if not result.has_new:
         return FanOutResult(recipients=0, sent=0, persisted=False)
 
-    recipients = store.subscriber_emails(result.prestazione)
+    recipients = store.subscriber_contacts(result.prestazione)
     if not recipients:
         # A scraped prestazione always has >=1 active target driving it (D28), so
         # this is a can't-happen guard; nothing to send, nothing recorded.

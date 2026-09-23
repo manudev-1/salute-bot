@@ -186,12 +186,12 @@ def _notify_nre_invalid(store: Store, mailer: Mailer, cf: str, code: str) -> Non
 
     Best-effort: a failed notice must not stop rotation (keeping the scrape alive for
     the other subscribers is the priority); broader failure signalling is D11."""
-    email = store.get_email(cf)
-    if email is None:
+    contact = store.get_contact(cf)
+    if contact is None:
         return
     notice = render_nre_invalid_notice(code, store.prestazione_descrizione(code))
     try:
-        mailer.send(email, notice)
+        mailer.send(contact, notice)
     except MailerError:
         pass
 
@@ -238,9 +238,9 @@ def _notify_watch_failing(store: Store, mailer: Mailer, code: str) -> None:
     """Tell a prestazione's active subscribers that watching is currently failing (D11).
     Best-effort per recipient; a failed notice must not break the sweep."""
     notice = render_watch_failing_notice(code, store.prestazione_descrizione(code))
-    for email in store.subscriber_emails(code):
+    for contact in store.subscriber_contacts(code):
         try:
-            mailer.send(email, notice)
+            mailer.send(contact, notice)
         except MailerError:
             pass
 
@@ -356,9 +356,9 @@ def notify_watcher_down(store: Store, mailer: Mailer) -> None:
     checker (not the daemon — it's the one that died); best-effort per recipient.
     The 'once per outage' de-dup is the checker's concern (Phase 5), not here."""
     notice = render_dead_man_notice()
-    for email in store.all_user_emails():
+    for contact in store.all_user_contacts():
         try:
-            mailer.send(email, notice)
+            mailer.send(contact, notice)
         except MailerError:
             pass
 

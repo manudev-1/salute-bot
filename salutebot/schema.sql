@@ -14,7 +14,9 @@
 CREATE TABLE IF NOT EXISTS users (
     cf_hash                TEXT PRIMARY KEY,          -- HMAC-SHA256(cf) blind index (D29)
     cf_enc                 TEXT NOT NULL,             -- AEAD ciphertext of the CF (D3/D29)
-    email                  TEXT NOT NULL,
+    email                  TEXT NOT NULL DEFAULT '',
+    notification_channel   TEXT NOT NULL DEFAULT 'email',
+    telegram_chat_id      TEXT,
     checknow_requested_at  REAL,                      -- last accepted --check-now fire (D26)
     last_checknow_at       REAL                       -- last completion, set by daemon (D26)
 );
@@ -65,7 +67,9 @@ CREATE TABLE IF NOT EXISTS slots (
 CREATE TABLE IF NOT EXISTS pending_registrations (
     cf_hash        TEXT PRIMARY KEY,                  -- one pending op per user (HMAC, D29); NOT a users FK (user may not exist yet)
     cf_enc         TEXT NOT NULL,                     -- AEAD (D3) — daemon decrypts to drive the ack scrape
-    email          TEXT NOT NULL,                     -- captured now; written to users only on confirm
+    email          TEXT NOT NULL DEFAULT '',          -- captured now; written to users only on confirm
+    notification_channel TEXT NOT NULL DEFAULT 'email',
+    telegram_chat_id TEXT,
     nre_enc        TEXT NOT NULL,                     -- AEAD (D3)
     requested_at   REAL NOT NULL,                     -- CLI sets on submit
     resolved_at    REAL,                              -- daemon sets on completion (NULL = still outstanding)

@@ -227,23 +227,32 @@ def _registration(store: Store, read, write, clock, sleep, heartbeat_path: str) 
         return
     if store.user_exists(cf):
         _returning_user_menu(store, cf, write)
-        email = store.get_email(cf)
-        if email is not None:  # always set for an existing user; guard satisfies the type
-            _offer_add_prestazione(store, cf, email, read, write, clock, sleep, heartbeat_path)
+        settings = store.get_notification_settings(cf)
+        if settings is not None:
+            channel, contact = settings
+            _offer_add_prestazione(
+                store, cf, contact or "", read, write, clock, sleep, heartbeat_path,
+                notification_channel=channel,
+            )
         return
-    email = read("Email per le notifiche: ").strip()
-    if not _valid_email(email):
-        write("Non sembra un indirizzo email valido. Nulla è stato salvato.")
+    channel, contact = _prompt_notification(read, write)
+    if channel is None:
         return
     nre = _prompt_nre(read, write)
     if nre is None:
         return
-    _run_ack(store, cf, email, nre, read, write, clock, sleep, heartbeat_path)
+    _run_ack(store, cf, contact, nre, read, write, clock, sleep, heartbeat_path,
+             notification_channel=channel)
 
 
 def _returning_user_menu(store: Store, cf: str, write) -> None:
     """Read-only status (the `-u` login view — no prompts, so it never blocks)."""
-    write(f"Bentornato. Le notifiche arrivano a {store.get_email(cf)}.")
+    settings = store.get_notification_settings(cf)
+    if settings is not None and settings[0] == "telegram":
+        destination = settings[1] or "il chat ID predefinito nel .env"
+    else:
+        destination = store.get_email(cf)
+    write(f"Bentornato. Le notifiche arrivano a {destination}.")
     targets = store.get_user_targets(cf)
     if not targets:
         write("Non segui ancora nessuna prestazione.")
@@ -256,7 +265,8 @@ def _returning_user_menu(store: Store, cf: str, write) -> None:
 
 
 def _offer_add_prestazione(
-    store: Store, cf: str, email: str, read, write, clock, sleep, heartbeat_path: str
+    store: Store, cf: str, contact: str, read, write, clock, sleep, heartbeat_path: str,
+    *, notification_channel: str = "email",
 ) -> None:
     """Interactive add-prestazione for an existing user (D14/D37 — a menu action, not a
     flag). Enter an NRE to watch another prestazione; blank to skip."""
@@ -268,12 +278,13 @@ def _offer_add_prestazione(
     except ValueError as err:
         write(str(err))
         return
-    _run_ack(store, cf, email, nre, read, write, clock, sleep, heartbeat_path)
+    _run_ack(store, cf, contact, nre, read, write, clock, sleep, heartbeat_path,
+             notification_channel=notification_channel)
 
 
 def _run_ack(
-    store: Store, cf: str, email: str, nre: str, read, write, clock, sleep,
-    heartbeat_path: str,
+    store: Store, cf: str, contact: str, nre: str, read, write, clock, sleep,
+    heartbeat_path: str, *, notification_channel: str = "email",
 ) -> None:
     """Stage an ack-scrape (D40), block until the daemon resolves it, show the
     prestazione + initial slots, confirm, and persist the target (D14/D27).
@@ -286,7 +297,13 @@ def _run_ack(
         _write_daemon_unavailable(write, nothing_saved=True)
         return
     request_ts = clock()
-    store.submit_registration(cf, email, nre, request_ts)
+    email = contact if notification_channel == "email" else ""
+    telegram_chat_id = contact if notification_channel == "telegram" and contact else None
+    store.submit_registration(
+        cf, email, nre, request_ts,
+        notification_channel=notification_channel,
+        telegram_chat_id=telegram_chat_id,
+    )
     write("Verifica della ricetta sul sistema di prenotazione — potrebbe richiedere qualche istante...")
     result = store.registration_result(cf, request_ts)
     while result is None:
@@ -316,9 +333,14 @@ def _run_ack(
         write("Ok — non verrà seguita. Nulla è stato salvato.")
         return
     if not store.user_exists(cf):
-        store.add_user(cf, email)
+        store.add_user(
+            cf, email,
+            notification_channel=notification_channel,
+            telegram_chat_id=telegram_chat_id,
+        )
     store.add_target(cf, Prestazione(code=code, descrizione=desc, quantita=None), nre)
-    write(f"Fatto — ora segui {desc} ({code}). Le notifiche arrivano a {email}.")
+    destination = contact or "il chat ID predefinito nel .env"
+    write(f"Fatto — ora segui {desc} ({code}). Le notifiche arrivano a {destination}.")
 
 
 def _daemon_unavailable(heartbeat_path: str, now: float) -> bool:
@@ -360,6 +382,23 @@ def _valid_email(email: str) -> bool:
     """Minimal structural check — an `@` with a dotted domain. Not RFC-complete."""
     at = email.count("@")
     return at == 1 and "." in email.split("@")[1] and not email.endswith(".")
+
+
+def _prompt_notification(read, write) -> tuple[str | None, str]:
+    choice = read("Canale notifiche: [1] email, [2] Telegram: ").strip().lower()
+    if choice in ("1", "email", "e"):
+        email = read("Email per le notifiche: ").strip()
+        if not _valid_email(email):
+            write("Non sembra un indirizzo email valido. Nulla è stato salvato.")
+            return None, ""
+        return "email", email
+    if choice in ("2", "telegram", "t"):
+        chat_id = read(
+            "Telegram chat ID (vuoto per usare quello predefinito nel .env): "
+        ).strip()
+        return "telegram", chat_id
+    write("Canale non valido. Nulla è stato salvato.")
+    return None, ""
 
 
 if __name__ == "__main__":
