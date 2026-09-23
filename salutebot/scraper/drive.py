@@ -127,6 +127,7 @@ class LiveScraper:
         retries rather than crashing on the fragile JSF flow. Secrets are typed into the
         page but never logged; error text carries only the exception type, never a value."""
         try:
+            print(f"[debug] starting live scrape for CF={cf} NRE={nre}", file=sys.stderr)
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(headless=self.__headless)
                 try:

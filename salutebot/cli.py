@@ -24,6 +24,8 @@ import argparse
 import math
 import os
 import time
+from dotenv import load_dotenv
+load_dotenv()
 
 from salutebot.config import EnvConfig
 from salutebot.crypto import Crypto
